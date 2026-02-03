@@ -33,6 +33,7 @@ use wire_representation::Game;
 
 pub mod compact_representation;
 pub mod hazard_algorithms;
+pub mod minstd;
 pub mod types;
 pub mod wire_representation;
 
