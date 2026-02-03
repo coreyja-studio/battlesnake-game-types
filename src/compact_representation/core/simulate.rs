@@ -1,11 +1,13 @@
 use std::{borrow::Borrow, time::Instant};
 
 use itertools::Itertools;
+use tracing::instrument;
 
 use crate::types::{Action, Move, SimulatorInstruments, SnakeId, N_MOVES};
 
 use super::{cell_board::EvaluateMode, dimensions::Dimensions, CellBoard, CellNum};
 
+#[instrument(level = "trace", skip_all)]
 pub fn simulate_with_moves<
     'a,
     S,
@@ -66,10 +68,7 @@ where
 
         let game = board.evaluate_moves_with_state(m.iter(), &states);
         if !game.assert_consistency() {
-            panic!(
-                "caught an inconsistent simulate, moves: {:?} orig: {}, new: {}",
-                m, board, game
-            );
+            panic!("caught an inconsistent simulate, moves: {m:?} orig: {board}, new: {game}");
         }
         (action, game)
     });

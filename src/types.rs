@@ -207,7 +207,8 @@ pub trait VictorDeterminableGame: std::fmt::Debug + SnakeIDGettableGame {
     /// How many snakes are alive
     fn alive_snake_count(&self) -> usize;
 }
-#[derive(Debug, Copy, Clone)]
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 /// Represents moves taken for a given simulation
 pub struct Action<const N_SNAKES: usize> {
@@ -245,6 +246,11 @@ impl<const N_SNAKES: usize> Action<N_SNAKES> {
         new_moves[0] = None;
         OtherAction { moves: new_moves }
     }
+
+    /// Get the inner array back
+    pub fn into_inner(self) -> [Option<Move>; N_SNAKES] {
+        self.moves
+    }
 }
 
 /// a game for which future states can be simulated
@@ -280,10 +286,24 @@ pub trait SimulableGame<T: SimulatorInstruments, const N_SNAKES: usize>:
 /// A game where positions can be checked for hazards
 pub trait HazardQueryableGame: PositionGettableGame {
     /// Is this position a hazard?
-    fn is_hazard(&self, pos: &Self::NativePositionType) -> bool;
+    fn is_hazard(&self, pos: &Self::NativePositionType) -> bool {
+        self.get_hazard_count(pos) > 0
+    }
 
     /// how much damage do hazards do?
     fn get_hazard_damage(&self) -> u8;
+
+    /// Get the total damage at a given position
+    fn get_hazard_damage_at(&self, pos: &Self::NativePositionType) -> u8 {
+        if self.is_hazard(pos) {
+            self.get_hazard_damage() * self.get_hazard_count(pos)
+        } else {
+            0
+        }
+    }
+
+    /// Get the count of hazards stacked on a given position
+    fn get_hazard_count(&self, pos: &Self::NativePositionType) -> u8;
 }
 
 /// A game where positions can be checked for food
@@ -391,6 +411,14 @@ pub trait RandomReasonableMovesGame: SnakeIDGettableGame {
     ) -> Box<dyn Iterator<Item = (Self::SnakeIDType, Move)> + 'a>;
 }
 
+/// a game for which reasonable moves for a given snake can be determined. e.g. do not collide with yourself
+pub trait ReasonableMovesGame: SnakeIDGettableGame {
+    #[allow(missing_docs)]
+    fn reasonable_moves_for_each_snake(
+        &self,
+    ) -> Box<dyn Iterator<Item = (Self::SnakeIDType, Vec<Move>)> + '_>;
+}
+
 /// a game for which the neighbors of a given Position can be determined
 pub trait NeighborDeterminableGame: PositionGettableGame {
     /// returns the neighboring positions
@@ -439,6 +467,27 @@ pub trait SnakeBodyGettableGame: PositionGettableGame + SnakeIDGettableGame {
         &self,
         snake_id: &Self::SnakeIDType,
     ) -> Box<dyn Iterator<Item = Self::NativePositionType> + '_>;
+}
+
+/// A marker trait that can be used to specify the number of snakes this board can support
+pub trait MaxSnakes<const MAX_SNAKES: usize> {}
+
+/// A game where we can get all the empty cells
+pub trait EmptyCellGettableGame: PositionGettableGame {
+    /// get the empty cells on the board
+    fn get_empty_cells(&self) -> Box<dyn Iterator<Item = Self::NativePositionType> + '_>;
+}
+
+/// A game that can place food following the standard rules
+///
+/// - If the number of Food on the board is less than the minimum spawn enough food to reach the miniumum.
+/// - Otherwise there is a 15% chance of spawning a single food
+/// - Otherwise no food spawns
+///
+/// - When food spawns place it randomly on the empty cells of the board
+pub trait StandardFoodPlaceableGame {
+    /// place food on the board according to the standard rules
+    fn place_food(&mut self, rng: &mut impl Rng);
 }
 
 #[cfg(test)]

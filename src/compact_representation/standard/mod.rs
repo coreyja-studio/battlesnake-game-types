@@ -1,21 +1,18 @@
 //! A compact board representation that is efficient for simulation
 use crate::compact_representation::core::CellNum as CN;
 use crate::impl_common_board_traits;
-use crate::types::{
-    build_snake_id_map, Action, FoodGettableGame, FoodQueryableGame, HazardQueryableGame,
-    HazardSettableGame, HeadGettableGame, HealthGettableGame, LengthGettableGame,
-    NeckQueryableGame, PositionGettableGame, RandomReasonableMovesGame, SizeDeterminableGame,
-    SnakeIDGettableGame, SnakeIDMap, SnakeId, VictorDeterminableGame, YouDeterminableGame,
-};
+use crate::types::*;
 /// you almost certainly want to use the `convert_from_game` method to
 /// cast from a json represention to a `CellBoard`
 use crate::types::{NeighborDeterminableGame, SnakeBodyGettableGame};
 use crate::wire_representation::Game;
-use rand::prelude::IteratorRandom;
+use itertools::Itertools;
+use rand::seq::SliceRandom;
 use rand::Rng;
 use std::borrow::Borrow;
 use std::error::Error;
 use std::fmt::Display;
+use tracing::instrument;
 
 use crate::{
     types::{Move, SimulableGame, SimulatorInstruments},
@@ -25,11 +22,11 @@ use crate::{
 use super::core::CellBoard as CCB;
 use super::core::CellIndex;
 use super::core::{simulate_with_moves, EvaluateMode};
-use super::dimensions::{ArcadeMaze, Dimensions, Fixed, Square};
+use super::dimensions::{ArcadeMaze, Custom, Dimensions, Fixed, Square};
 
 /// A compact board representation that is significantly faster for simulation than
 /// `battlesnake_game_types::wire_representation::Game`.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct CellBoard<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> {
     embedded: CCB<T, D, BOARD_SIZE, MAX_SNAKES>,
 }
@@ -47,10 +44,10 @@ pub type CellBoard4Snakes11x11 = CellBoard<u8, Square, { 11 * 11 }, 4>;
 pub type CellBoard8Snakes15x15 = CellBoard<u8, Square, { 15 * 15 }, 8>;
 
 /// Used to represent the largest UI Selectable board with 8 snakes.
-pub type CellBoard8Snakes25x25 = CellBoard<u16, Square, { 25 * 25 }, 8>;
+pub type CellBoard8Snakes25x25 = CellBoard<u16, Custom, { 25 * 25 }, 8>;
 
 /// Used to represent an absolutely silly game board
-pub type CellBoard16Snakes50x50 = CellBoard<u16, Square, { 50 * 50 }, 16>;
+pub type CellBoard16Snakes50x50 = CellBoard<u16, Custom, { 50 * 50 }, 16>;
 
 impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>
@@ -73,6 +70,22 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
             || new_head.y < 0
             || new_head.y >= self.embedded.get_actual_height() as i32
     }
+
+    /// Return an iterator over all the empty cells on the board
+    pub fn get_all_empty(&self) -> impl Iterator<Item = CellIndex<T>> + '_ {
+        self.embedded.get_empty_cells()
+    }
+
+    /// Spawn food deterministically using the MINSTD PRNG.
+    ///
+    /// Forwards to the core CellBoard's `spawn_food` implementation.
+    pub fn spawn_food(
+        &mut self,
+        rng: &mut crate::minstd::MinstdRand,
+        config: &super::core::FoodSpawnConfig,
+    ) {
+        self.embedded.spawn_food(rng, config);
+    }
 }
 
 impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
@@ -82,6 +95,19 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
         &'a self,
         rng: &'a mut impl Rng,
     ) -> Box<dyn std::iter::Iterator<Item = (SnakeId, Move)> + 'a> {
+        Box::new(
+            self.reasonable_moves_for_each_snake()
+                .map(move |(sid, mvs)| (sid, *mvs.choose(rng).unwrap())),
+        )
+    }
+}
+
+impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> ReasonableMovesGame
+    for CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>
+{
+    fn reasonable_moves_for_each_snake(
+        &self,
+    ) -> Box<dyn std::iter::Iterator<Item = (SnakeId, Vec<Move>)> + '_> {
         let width = self.embedded.get_actual_width();
         Box::new(
             self.embedded
@@ -91,18 +117,20 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
                 .map(move |(idx, _)| {
                     let head_pos = self.get_head_as_position(&SnakeId(idx as u8));
 
-                    let mv = IntoIterator::into_iter(Move::all())
+                    let mvs = IntoIterator::into_iter(Move::all())
                         .filter(|mv| {
                             let new_head = head_pos.add_vec(mv.to_vector());
-                            let ci = CellIndex::new(head_pos.add_vec(mv.to_vector()), width);
+                            let ci = CellIndex::new(new_head, width);
 
                             !self.off_board(new_head)
-                                && !self.embedded.cell_is_body(ci)
+                                && (!self.embedded.cell_is_body(ci)
+                                    || self.embedded.cell_is_single_tail(ci))
                                 && !self.embedded.cell_is_snake_head(ci)
                         })
-                        .choose(rng)
-                        .unwrap_or(Move::Up);
-                    (SnakeId(idx as u8), mv)
+                        .collect_vec();
+                    let mvs = if mvs.is_empty() { vec![Move::Up] } else { mvs };
+
+                    (SnakeId(idx as u8), mvs)
                 }),
         )
     }
@@ -117,6 +145,7 @@ impl<
     > SimulableGame<T, MAX_SNAKES> for CellBoard<N, D, BOARD_SIZE, MAX_SNAKES>
 {
     #[allow(clippy::type_complexity)]
+    #[instrument(level = "trace", skip_all)]
     fn simulate_with_moves<S>(
         &self,
         instruments: &T,
@@ -146,7 +175,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     fn possible_moves<'a>(
         &'a self,
         pos: &Self::NativePositionType,
-    ) -> Box<(dyn std::iter::Iterator<Item = (Move, CellIndex<T>)> + 'a)> {
+    ) -> Box<dyn std::iter::Iterator<Item = (Move, CellIndex<T>)> + 'a> {
         let width = self.embedded.get_actual_width();
         let head_pos = pos.into_position(width);
 
@@ -166,7 +195,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     fn neighbors<'a>(
         &'a self,
         pos: &Self::NativePositionType,
-    ) -> Box<(dyn Iterator<Item = CellIndex<T>> + 'a)> {
+    ) -> Box<dyn Iterator<Item = CellIndex<T>> + 'a> {
         let width = self.embedded.get_actual_width();
         let head_pos = pos.into_position(width);
 
@@ -201,6 +230,8 @@ pub enum BestCellBoard {
     LargeExact(Box<CellBoard<u16, Fixed<19, 19>, { 19 * 19 }, 4>>),
     /// A board that fits the Arcade Maze map
     ArcadeMaze(Box<CellBoard<u16, ArcadeMaze, { 19 * 21 }, 4>>),
+    /// A board that fits the Arcade Maze map
+    ArcadeMaze8Snake(Box<CellBoard<u16, ArcadeMaze, { 19 * 21 }, 8>>),
     /// A game that can have a max height and width of 25x25 and 8 snakes
     Large(Box<CellBoard8Snakes25x25>),
     /// A game that can have a max height and width of 50x50 and 16 snakes
@@ -237,6 +268,8 @@ impl ToBestCellBoard for Game {
             BestCellBoard::LargeExact(Box::new(CellBoard::convert_from_game(self, &id_map)?))
         } else if width == 19 && height == 21 && num_snakes <= 4 {
             BestCellBoard::ArcadeMaze(Box::new(CellBoard::convert_from_game(self, &id_map)?))
+        } else if width == 19 && height == 21 && num_snakes <= 8 {
+            BestCellBoard::ArcadeMaze8Snake(Box::new(CellBoard::convert_from_game(self, &id_map)?))
         } else if width <= 25 && height < 25 && num_snakes <= 8 {
             BestCellBoard::Large(Box::new(CellBoard::convert_from_game(self, &id_map)?))
         } else if width <= 50 && height <= 50 && num_snakes <= 16 {
@@ -330,13 +363,13 @@ mod test {
             Move::Down,
         ];
         let instruments = Instruments;
-        eprintln!("{}", compact);
+        eprintln!("{compact}");
         for mv in moves {
             let res = compact
                 .simulate_with_moves(&instruments, vec![(SnakeId(0), [mv].as_slice())])
                 .collect_vec();
             compact = res[0].1;
-            eprintln!("{}", compact);
+            eprintln!("{compact}");
         }
         assert!(compact.get_health(&SnakeId(0)) > 0);
     }
@@ -478,5 +511,60 @@ mod test {
                 .map(|(_, pos)| pos)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_tail_chase() {
+        let game_fixture = include_str!("../../../fixtures/tail_chase.json");
+        let g: Result<DEGame, _> = serde_json::from_slice(game_fixture.as_bytes());
+        let g = g.expect("the json literal is valid");
+        let snake_id_mapping = build_snake_id_map(&g);
+        let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
+
+        let head = compact.get_head_as_native_position(&SnakeId(0));
+        assert_eq!(head, CellIndex(0));
+
+        let mut reasonable_moves = compact.reasonable_moves_for_each_snake();
+        let reasonable_moves_for_me = reasonable_moves.next().unwrap().1;
+
+        assert_eq!(reasonable_moves_for_me, vec![Move::Up]);
+    }
+
+    #[test]
+    fn test_simulate_stacked_hazards() {
+        let game_fixture = include_str!("../../../fixtures/stacked_hazards.json");
+        let g: Result<DEGame, _> = serde_json::from_slice(game_fixture.as_bytes());
+        let g = g.expect("the json literal is valid");
+        let snake_id_mapping = build_snake_id_map(&g);
+        let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
+
+        let moves = vec![(SnakeId(0), vec![Move::Down])];
+
+        let result = compact
+            .simulate_with_moves(&Instruments {}, moves)
+            .next()
+            .unwrap()
+            .1;
+
+        assert_eq!(result.get_health(&SnakeId(0)), 69);
+    }
+
+    #[test]
+    fn test_simulate_stacked_hazards_no_hazard_on_sqaure() {
+        let game_fixture = include_str!("../../../fixtures/stacked_hazards.json");
+        let g: Result<DEGame, _> = serde_json::from_slice(game_fixture.as_bytes());
+        let g = g.expect("the json literal is valid");
+        let snake_id_mapping = build_snake_id_map(&g);
+        let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
+
+        let moves = vec![(SnakeId(0), vec![Move::Right])];
+
+        let result = compact
+            .simulate_with_moves(&Instruments {}, moves)
+            .next()
+            .unwrap()
+            .1;
+
+        assert_eq!(result.get_health(&SnakeId(0)), 99);
     }
 }

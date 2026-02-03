@@ -3,9 +3,12 @@ use std::error::Error;
 use std::slice::Iter;
 
 use itertools::Itertools;
+use rand::seq::IteratorRandom;
 
+use crate::types::EmptyCellGettableGame;
 use crate::types::SnakeIDMap;
 use crate::types::SnakeId;
+use crate::types::StandardFoodPlaceableGame;
 use crate::wire_representation::Game;
 use crate::wire_representation::Position;
 
@@ -17,6 +20,8 @@ use super::{DOUBLE_STACK, TRIPLE_STACK};
 
 mod eval;
 mod food_gettable;
+/// Deterministic food spawning using MINSTD PRNG.
+pub mod food_spawn;
 mod hazard_queryable;
 mod hazard_settable;
 mod head_gettable;
@@ -34,7 +39,7 @@ pub use eval::EvaluateMode;
 
 /// A compact board representation that is significantly faster for simulation than
 /// `battlesnake_game_types::wire_representation::Game`.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct CellBoard<
     T: CN,
     DimensionsType: Dimensions,
@@ -156,7 +161,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
         }
 
         let mut cells = [Cell::<T>::empty(); BOARD_SIZE];
-        let cells_iter = hash.get("cells").unwrap().iter().map(|x| *x as u32);
+        let cells_iter = hash.get("cells").unwrap().iter().cloned();
         for (idx, cell) in cells_iter.enumerate() {
             cells[idx] = Cell::<T>::from_u32(cell);
         }
@@ -313,9 +318,15 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
                     y: y as i32,
                 };
                 let cell_idx: CellIndex<T> = CellIndex::new(position, width);
-                if game.board.hazards.contains(&position) {
-                    cells[cell_idx.0.as_usize()].set_hazard();
-                }
+
+                let hazard_count = game
+                    .board
+                    .hazards
+                    .iter()
+                    .filter(|p| **p == position)
+                    .count();
+                cells[cell_idx.0.as_usize()].set_hazard_count(hazard_count as u8);
+
                 if game.board.food.contains(&position) {
                     cells[cell_idx.0.as_usize()].set_food();
                 }
@@ -407,6 +418,10 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
         self.get_cell(cell_idx).is_hazard()
     }
 
+    fn cell_hazard_count(&self, cell_idx: CellIndex<T>) -> u8 {
+        self.get_cell(cell_idx).hazard_count()
+    }
+
     /// determines if this cell is a snake head (including triple stacked)
     pub fn cell_is_snake_head(&self, cell_idx: CellIndex<T>) -> bool {
         self.get_cell(cell_idx).is_head()
@@ -422,15 +437,79 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
         self.get_cell(cell_idx).is_body()
     }
 
+    pub fn cell_is_single_tail(&self, cell_idx: CellIndex<T>) -> bool {
+        let cell = self.get_cell(cell_idx);
+        if !cell.is_snake_body_piece()
+            || cell.is_double_stacked_piece()
+            || cell.is_triple_stacked_piece()
+        {
+            return false;
+        }
+
+        if let Some(sid) = cell.get_snake_id() {
+            let head = self.heads[sid.0 as usize];
+
+            self.get_cell(head).get_tail_position(head) == Some(cell_idx)
+        } else {
+            false
+        }
+    }
+
     /// determin the width of the CellBoard
     pub fn width() -> u8 {
         (BOARD_SIZE as f32).sqrt() as u8
     }
 }
 
+impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize> EmptyCellGettableGame
+    for CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>
+{
+    fn get_empty_cells(&self) -> Box<dyn Iterator<Item = Self::NativePositionType> + '_> {
+        Box::new(
+            self.cells
+                .iter()
+                .enumerate()
+                .filter(|(_, cell)| cell.is_empty())
+                .map(|(idx, _)| CellIndex::from_usize(idx)),
+        )
+    }
+}
+
+impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
+    StandardFoodPlaceableGame for CellBoard<T, D, BOARD_SIZE, MAX_SNAKES>
+{
+    fn place_food(&mut self, rng: &mut impl rand::Rng) {
+        // TODO: Get these constants from the game
+        let min_food = 1;
+        let food_spawn_chance = 0.15;
+
+        // This is an optimization when min_food is 1. We know we don't need to spawn food if there if any of the board
+        // so we can short circuit on the first food we find
+        let food_to_add = if !self.cells.iter().any(|c| c.is_food()) {
+            min_food
+        } else {
+            usize::from(rng.gen_bool(food_spawn_chance))
+        };
+
+        if food_to_add == 0 {
+            return;
+        }
+
+        let empty = self.get_empty_cells();
+        let random = empty.choose_multiple(rng, food_to_add);
+        for pos in random {
+            self.cells[pos.0.as_usize()].set_food();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::compact_representation::dimensions::Square;
+    use crate::{
+        compact_representation::{dimensions::Square, CellIndex, StandardCellBoard4Snakes11x11},
+        types::{build_snake_id_map, HazardQueryableGame},
+        wire_representation::Game,
+    };
 
     use super::CellBoard;
     #[test]
@@ -439,5 +518,16 @@ mod tests {
         let hm = serde_json::from_str(inconsistent_fixture).unwrap();
         let game = CellBoard::<u8, Square, { 11 * 11 }, 4>::from_packed_hash(&hm);
         assert!(!game.assert_consistency());
+    }
+
+    #[test]
+    fn test_stacked_hazards_conversion() {
+        let fixture = include_str!("../../../../fixtures/stacked_hazards.json");
+        let wire: Game = serde_json::from_str(fixture).unwrap();
+
+        let id_map = build_snake_id_map(&wire);
+        let compact = StandardCellBoard4Snakes11x11::convert_from_game(wire, &id_map).unwrap();
+
+        assert_eq!(compact.get_hazard_count(&CellIndex::from_usize(0)), 2);
     }
 }
