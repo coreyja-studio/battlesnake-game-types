@@ -246,7 +246,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     fn possible_moves<'a>(
         &'a self,
         pos: &Self::NativePositionType,
-    ) -> Box<(dyn std::iter::Iterator<Item = (Move, CellIndex<T>)> + 'a)> {
+    ) -> Box<dyn std::iter::Iterator<Item = (Move, CellIndex<T>)> + 'a> {
         let width = self.embedded.get_actual_width();
         let head_pos = pos.into_position(width);
 
@@ -267,7 +267,7 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     fn neighbors<'a>(
         &'a self,
         pos: &Self::NativePositionType,
-    ) -> Box<(dyn Iterator<Item = CellIndex<T>> + 'a)> {
+    ) -> Box<dyn Iterator<Item = CellIndex<T>> + 'a> {
         Box::new(self.possible_moves(pos).map(|(_, ci)| ci))
     }
 }
