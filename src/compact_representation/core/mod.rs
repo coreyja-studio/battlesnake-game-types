@@ -8,6 +8,7 @@ use crate::{
     wire_representation::Position,
 };
 
+pub use cell_board::food_spawn::FoodSpawnConfig;
 pub use cell_board::{CellBoard, EvaluateMode};
 pub use cell_num::CellNum;
 pub use simulate::simulate_with_moves;

@@ -75,6 +75,17 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     pub fn get_all_empty(&self) -> impl Iterator<Item = CellIndex<T>> + '_ {
         self.embedded.get_empty_cells()
     }
+
+    /// Spawn food deterministically using the MINSTD PRNG.
+    ///
+    /// Forwards to the core CellBoard's `spawn_food` implementation.
+    pub fn spawn_food(
+        &mut self,
+        rng: &mut crate::minstd::MinstdRand,
+        config: &super::core::FoodSpawnConfig,
+    ) {
+        self.embedded.spawn_food(rng, config);
+    }
 }
 
 impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>

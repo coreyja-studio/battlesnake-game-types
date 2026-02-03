@@ -1,5 +1,6 @@
 //! A compact board representation that is efficient for simulation
 mod core;
+pub mod game_step;
 pub mod standard;
 pub mod wrapped;
 

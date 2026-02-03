@@ -20,8 +20,8 @@ use super::{DOUBLE_STACK, TRIPLE_STACK};
 
 mod eval;
 mod food_gettable;
-#[allow(dead_code)]
-mod food_spawn;
+/// Deterministic food spawning using MINSTD PRNG.
+pub mod food_spawn;
 mod hazard_queryable;
 mod hazard_settable;
 mod head_gettable;
