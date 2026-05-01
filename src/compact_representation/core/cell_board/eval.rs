@@ -341,6 +341,17 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
 
                     let old_head_cell = self.get_cell(old_head);
                     if old_head_cell.is_triple_stacked_piece() {
+                        // FIXME(2026-05-01): when ate_food is also true here,
+                        // the snake body should be `[new_head, old_head x3]`
+                        // (length 4) but we demote the cell to double-stacked
+                        // and produce length 3 — see test
+                        // `test_triple_stacked_eats_food` (currently
+                        // `#[ignore]`d). The compact representation has no kind
+                        // for "non-head triple-stacked body with chain
+                        // pointer", and `convert_from_game` rejects the same
+                        // body shape outright (`bad body stack`). Fixing this
+                        // requires a new cell kind; documented in
+                        // `byte-scratch:engine-verifier/FAILURES_ANALYSIS.md`.
                         new.set_cell_double_stacked(old_head, id, new_head);
                     } else {
                         new.set_cell_body_piece(old_head, id, new_head);

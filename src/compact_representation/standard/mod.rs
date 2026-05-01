@@ -348,6 +348,50 @@ mod test {
     }
 
     #[test]
+    #[ignore = "fails: representation lacks a non-head triple-stacked body kind; see eval.rs FIXME and engine-verifier FAILURES_ANALYSIS.md"]
+    fn test_triple_stacked_eats_food() {
+        // Regression test for the engine-verifier "Bug A" finding (2026-05-01):
+        // a length-3 fully-stacked snake that eats food on its first move ends
+        // up at length 3 instead of 4 because the eval loop demotes the
+        // triple-stacked cell to double-stacked even though the tail has grown
+        // into the same cell. The Go reference engine correctly produces length
+        // 4 with three body segments still stacked at the original position.
+        //
+        // Currently `#[ignore]`d because a correct fix requires extending the
+        // compact representation: there is no cell kind for "non-head triple-
+        // stacked body with a chain pointer", and `convert_from_game` already
+        // rejects the same body shape (`bad body stack`). A naive
+        // set_cell_triple_stacked on the old-head cell breaks
+        // `assert_consistency` (triple-stacked has no `get_next_index`).
+        let game_fixture = include_str!("../../../fixtures/triple_stacked_with_food_ahead.json");
+        let g: Result<DEGame, _> = serde_json::from_slice(game_fixture.as_bytes());
+        let g = g.expect("the json literal is valid");
+        let snake_id_mapping = build_snake_id_map(&g);
+        let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
+
+        let instruments = Instruments;
+        let res = compact
+            .simulate_with_moves(
+                &instruments,
+                vec![(SnakeId(0), [Move::Right].as_slice())],
+            )
+            .collect_vec();
+        let after = res[0].1;
+
+        // Body should be: head at (9,2), then three stacked tail segments at (8,2)
+        let body = after.get_snake_body_vec(&SnakeId(0));
+        let head_at_9_2 = CellIndex::<u8>::new(Position { x: 9, y: 2 }, 11);
+        let tail_at_8_2 = CellIndex::<u8>::new(Position { x: 8, y: 2 }, 11);
+        assert_eq!(
+            body,
+            vec![head_at_9_2, tail_at_8_2, tail_at_8_2, tail_at_8_2],
+            "expected length-4 body with triple-stacked tail at (8,2)"
+        );
+        assert_eq!(after.get_length(&SnakeId(0)), 4);
+        assert_eq!(after.get_health(&SnakeId(0)), 100);
+    }
+
+    #[test]
     fn test_tail_collision() {
         let game_fixture = include_str!("../../../fixtures/start_of_game.json");
         let g: Result<DEGame, _> = serde_json::from_slice(game_fixture.as_bytes());
