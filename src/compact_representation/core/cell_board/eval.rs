@@ -224,7 +224,14 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
                         // happen later
                     }
                 }
-                SinglePlayerMoveResult::Dead => new.kill_and_remove(*id),
+                // Bug B (2026-05-01): we used to call `new.kill_and_remove(*id)` here,
+                // which wiped a snake that died during phase 1 (out-of-bounds, neck-step,
+                // or starvation) before the collision pass below could see its body. That
+                // let other snakes' new heads land on what should have been an occupied
+                // cell and survive incorrectly. We now defer the removal: the body stays
+                // on the board for collision detection and is removed at the end together
+                // with snakes killed by collisions.
+                SinglePlayerMoveResult::Dead => {}
             }
         }
 
@@ -316,6 +323,20 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
 
             if winner.is_none() && !head_to_head_collision_on_another_snake {
                 new.cell_remove(*head_to_head_collision_pos);
+            }
+        }
+
+        // First, remove the bodies of snakes that died in phase 1 (Dead results
+        // from `generate_state`). We deferred this so the bodies stayed on the
+        // board during the collision detection above; now that to_kill is fully
+        // determined, the bodies can come off.
+        for (id, m) in moves.iter() {
+            if new_heads[id.as_usize()][m.as_index()].is_dead() {
+                // Only kill_and_remove if the snake still has a body to remove
+                // (a previously-dead snake will have head/length zeroed already).
+                if new.lengths[id.as_usize()] > 0 {
+                    new.kill_and_remove(*id);
+                }
             }
         }
 

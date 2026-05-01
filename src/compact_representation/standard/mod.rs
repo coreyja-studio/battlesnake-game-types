@@ -371,10 +371,7 @@ mod test {
 
         let instruments = Instruments;
         let res = compact
-            .simulate_with_moves(
-                &instruments,
-                vec![(SnakeId(0), [Move::Right].as_slice())],
-            )
+            .simulate_with_moves(&instruments, vec![(SnakeId(0), [Move::Right].as_slice())])
             .collect_vec();
         let after = res[0].1;
 
@@ -389,6 +386,54 @@ mod test {
         );
         assert_eq!(after.get_length(&SnakeId(0)), 4);
         assert_eq!(after.get_health(&SnakeId(0)), 100);
+    }
+
+    #[test]
+    fn test_snake_collision_ordering() {
+        // Regression test for engine-verifier "Bug B" (2026-05-01).
+        //
+        // Setup (turn 5):
+        //   snake-0 body=[(3,6),(3,7),(4,7)], move=Right -> new_head=(4,6)
+        //   snake-1 body=[(4,6),(5,6),(6,6)], move=Right -> new_head=(5,6)
+        //
+        // Expected per Battlesnake spec (all moves resolve simultaneously):
+        //   snake-0 dies: new_head (4,6) collides with snake-1's post-move
+        //                 body which still occupies (4,6) as a body segment.
+        //   snake-1 dies: self-collision -- new_head (5,6) is its own neck.
+        //
+        // Previous Rust behavior incorrectly produced snake-0 ALIVE because
+        // snake-1's `Dead` move-result triggered `kill_and_remove` inside the
+        // first move-processing loop, wiping snake-1's body before snake-0's
+        // collision check could see it.
+        let game_fixture = include_str!("../../../fixtures/snake_collision_ordering.json");
+        let g: Result<DEGame, _> = serde_json::from_slice(game_fixture.as_bytes());
+        let g = g.expect("the json literal is valid");
+        let snake_id_mapping = build_snake_id_map(&g);
+        let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
+
+        let instruments = Instruments;
+        let res = compact
+            .simulate_with_moves(
+                &instruments,
+                vec![
+                    (SnakeId(0), [Move::Right].as_slice()),
+                    (SnakeId(1), [Move::Right].as_slice()),
+                ],
+            )
+            .collect_vec();
+        assert_eq!(res.len(), 1, "exactly one move combination");
+        let after = res[0].1;
+
+        assert_eq!(
+            after.get_health(&SnakeId(0)),
+            0,
+            "snake-0 must die from collision with snake-1's body at (4,6)"
+        );
+        assert_eq!(
+            after.get_health(&SnakeId(1)),
+            0,
+            "snake-1 must die from self-collision into its neck at (5,6)"
+        );
     }
 
     #[test]
