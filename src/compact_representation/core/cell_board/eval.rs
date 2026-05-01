@@ -1,10 +1,11 @@
 use std::borrow::Borrow;
 
 use itertools::Itertools;
+use tracing::instrument;
 
 use crate::{
     compact_representation::{core::dimensions::Dimensions, CellNum},
-    types::{self, HeadGettableGame, Move, SnakeId, N_MOVES},
+    types::{self, HazardQueryableGame, HeadGettableGame, Move, SnakeId, N_MOVES},
 };
 
 use super::{CellBoard, CellIndex};
@@ -116,7 +117,7 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
                     while curr != old_head {
                         prev = curr;
                         curr = self.get_cell(curr).get_next_index().unwrap_or_else(|| {
-                            eprintln!("{}", self);
+                            eprintln!("{self}");
                             panic!("snake is inconsistent")
                         });
                     }
@@ -138,9 +139,8 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
 
                 let mut new_health = self.healths[id.as_usize()];
                 new_health = new_health.saturating_sub(1);
-                if self.get_cell(new_head).is_hazard() {
-                    new_health = new_health.saturating_sub(self.hazard_damage);
-                }
+                let hazard_damange = self.get_hazard_damage_at(&new_head);
+                new_health = new_health.saturating_sub(hazard_damange);
 
                 let ate_food = self.get_cell(new_head).is_food();
                 let mut new_length = self.lengths[id.as_usize()];
@@ -171,6 +171,7 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
         new_heads
     }
 
+    #[instrument(level = "trace", skip_all)]
     pub fn evaluate_moves_with_state<'a>(
         &self,
         moves: impl Iterator<Item = &'a (SnakeId, crate::types::Move)>,
@@ -223,7 +224,14 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
                         // happen later
                     }
                 }
-                SinglePlayerMoveResult::Dead => new.kill_and_remove(*id),
+                // Bug B (2026-05-01): we used to call `new.kill_and_remove(*id)` here,
+                // which wiped a snake that died during phase 1 (out-of-bounds, neck-step,
+                // or starvation) before the collision pass below could see its body. That
+                // let other snakes' new heads land on what should have been an occupied
+                // cell and survive incorrectly. We now defer the removal: the body stays
+                // on the board for collision detection and is removed at the end together
+                // with snakes killed by collisions.
+                SinglePlayerMoveResult::Dead => {}
             }
         }
 
@@ -318,6 +326,20 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
             }
         }
 
+        // First, remove the bodies of snakes that died in phase 1 (Dead results
+        // from `generate_state`). We deferred this so the bodies stayed on the
+        // board during the collision detection above; now that to_kill is fully
+        // determined, the bodies can come off.
+        for (id, m) in moves.iter() {
+            if new_heads[id.as_usize()][m.as_index()].is_dead() {
+                // Only kill_and_remove if the snake still has a body to remove
+                // (a previously-dead snake will have head/length zeroed already).
+                if new.lengths[id.as_usize()] > 0 {
+                    new.kill_and_remove(*id);
+                }
+            }
+        }
+
         for result in moves
             .iter()
             .map(|(id, m)| new_heads[id.as_usize()][m.as_index()])
@@ -340,6 +362,17 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
 
                     let old_head_cell = self.get_cell(old_head);
                     if old_head_cell.is_triple_stacked_piece() {
+                        // FIXME(2026-05-01): when ate_food is also true here,
+                        // the snake body should be `[new_head, old_head x3]`
+                        // (length 4) but we demote the cell to double-stacked
+                        // and produce length 3 — see test
+                        // `test_triple_stacked_eats_food` (currently
+                        // `#[ignore]`d). The compact representation has no kind
+                        // for "non-head triple-stacked body with chain
+                        // pointer", and `convert_from_game` rejects the same
+                        // body shape outright (`bad body stack`). Fixing this
+                        // requires a new cell kind; documented in
+                        // `byte-scratch:engine-verifier/FAILURES_ANALYSIS.md`.
                         new.set_cell_double_stacked(old_head, id, new_head);
                     } else {
                         new.set_cell_body_piece(old_head, id, new_head);
