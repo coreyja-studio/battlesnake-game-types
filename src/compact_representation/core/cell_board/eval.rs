@@ -205,6 +205,10 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
                     let old_tail_cell = new.get_cell(old_tail);
                     if old_tail_cell.is_double_stacked_piece() {
                         new.set_cell_body_piece(old_tail, id, old_tail_cell.get_idx());
+                    } else if old_tail_cell.is_body_triple_stacked_piece() {
+                        // Mid-game three-stack body cell shrinks one level,
+                        // keeping its existing chain pointer toward the head.
+                        new.set_cell_double_stacked(old_tail, id, old_tail_cell.get_idx());
                     } else {
                         new.cell_remove(old_tail);
                         new.set_cell_head(old_head, id, new_tail)
@@ -224,7 +228,14 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
                         // happen later
                     }
                 }
-                SinglePlayerMoveResult::Dead => new.kill_and_remove(*id),
+                // Bug B (2026-05-01): we used to call `new.kill_and_remove(*id)` here,
+                // which wiped a snake that died during phase 1 (out-of-bounds, neck-step,
+                // or starvation) before the collision pass below could see its body. That
+                // let other snakes' new heads land on what should have been an occupied
+                // cell and survive incorrectly. We now defer the removal: the body stays
+                // on the board for collision detection and is removed at the end together
+                // with snakes killed by collisions.
+                SinglePlayerMoveResult::Dead => {}
             }
         }
 
@@ -319,6 +330,20 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
             }
         }
 
+        // First, remove the bodies of snakes that died in phase 1 (Dead results
+        // from `generate_state`). We deferred this so the bodies stayed on the
+        // board during the collision detection above; now that to_kill is fully
+        // determined, the bodies can come off.
+        for (id, m) in moves.iter() {
+            if new_heads[id.as_usize()][m.as_index()].is_dead() {
+                // Only kill_and_remove if the snake still has a body to remove
+                // (a previously-dead snake will have head/length zeroed already).
+                if new.lengths[id.as_usize()] > 0 {
+                    new.kill_and_remove(*id);
+                }
+            }
+        }
+
         for result in moves
             .iter()
             .map(|(id, m)| new_heads[id.as_usize()][m.as_index()])
@@ -328,6 +353,7 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
                 old_head,
                 new_head,
                 new_tail,
+                ate_food,
                 ..
             }) = result
             {
@@ -341,7 +367,26 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
 
                     let old_head_cell = self.get_cell(old_head);
                     if old_head_cell.is_triple_stacked_piece() {
-                        new.set_cell_double_stacked(old_head, id, new_head);
+                        if ate_food {
+                            // The snake was fully self-stacked and just ate.
+                            // Body becomes `[new_head, old_head x3]`: three
+                            // segments stay on the old cell with a chain
+                            // pointer back to `new_head`. This requires the
+                            // dedicated `BODY_TRIPLE_STACKED` kind because
+                            // the existing `TRIPLE_STACKED_PIECE` is implicitly
+                            // the head and has no chain pointer. See
+                            // `DESIGN_stacked_food_fix.md`.
+                            //
+                            // Note: a snake cannot become quad-stacked at the
+                            // same cell — eating moves the head off the stack,
+                            // so two consecutive food-eats on the same square
+                            // are impossible.
+                            new.set_cell_body_triple_stacked(old_head, id, new_head);
+                        } else {
+                            // No food: body becomes `[new_head, old_head x2]`.
+                            // The old head cell demotes by one stack level.
+                            new.set_cell_double_stacked(old_head, id, new_head);
+                        }
                     } else {
                         new.set_cell_body_piece(old_head, id, new_head);
                     }

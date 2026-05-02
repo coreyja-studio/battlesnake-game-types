@@ -63,6 +63,13 @@ const DOUBLE_STACKED_PIECE: u8 = 0x02;
 const TRIPLE_STACKED_PIECE: u8 = 0x03;
 const FOOD: u8 = 0x04;
 const EMPTY: u8 = 0x05;
+/// A non-head body segment that holds three stacked pieces. This kind only
+/// arises mid-game when a fully self-stacked snake (`TRIPLE_STACKED_PIECE`,
+/// which is implicitly the head) eats a food: the head moves to a new cell
+/// while three body segments remain on the old cell, and that old cell now
+/// needs a real chain pointer back to the new head. See
+/// `DESIGN_stacked_food_fix.md` for the full rationale.
+const BODY_TRIPLE_STACKED_PIECE: u8 = 0x07;
 const KIND_MASK: u8 = 0x07;
 
 const IS_HAZARD: u8 = 0x10;
@@ -121,7 +128,10 @@ impl<T: CellNum> Cell<T> {
     }
 
     pub fn get_next_index(&self) -> Option<CellIndex<T>> {
-        if self.is_snake_body_piece() || self.is_double_stacked_piece() {
+        if self.is_snake_body_piece()
+            || self.is_double_stacked_piece()
+            || self.is_body_triple_stacked_piece()
+        {
             Some(self.idx)
         } else {
             None
@@ -160,6 +170,7 @@ impl<T: CellNum> Cell<T> {
         self.is_snake_body_piece()
             || self.is_double_stacked_piece()
             || self.is_triple_stacked_piece()
+            || self.is_body_triple_stacked_piece()
     }
 
     pub fn is_head(&self) -> bool {
@@ -175,7 +186,9 @@ impl<T: CellNum> Cell<T> {
     }
 
     pub fn is_stacked(&self) -> bool {
-        self.is_double_stacked_piece() || self.is_triple_stacked_piece()
+        self.is_double_stacked_piece()
+            || self.is_triple_stacked_piece()
+            || self.is_body_triple_stacked_piece()
     }
 
     pub fn empty() -> Self {
@@ -223,6 +236,18 @@ impl<T: CellNum> Cell<T> {
         }
     }
 
+    /// Mid-game three-stack body cell. `next_index` chains tail->head and
+    /// must point at the cell closer to the head (typically the new head
+    /// cell created by the eat-while-fully-stacked move).
+    pub fn make_body_triple_stacked_piece(sid: SnakeId, next_index: CellIndex<T>) -> Self {
+        Cell {
+            flags: BODY_TRIPLE_STACKED_PIECE,
+            id: sid,
+            idx: next_index,
+            hazard_count: 0,
+        }
+    }
+
     pub fn is_snake_body_piece(&self) -> bool {
         self.flags & KIND_MASK == SNAKE_BODY_PIECE
     }
@@ -235,10 +260,15 @@ impl<T: CellNum> Cell<T> {
         self.flags & KIND_MASK == TRIPLE_STACKED_PIECE
     }
 
+    pub fn is_body_triple_stacked_piece(&self) -> bool {
+        self.flags & KIND_MASK == BODY_TRIPLE_STACKED_PIECE
+    }
+
     pub fn is_body(&self) -> bool {
         self.is_snake_body_piece()
             || self.is_double_stacked_piece()
             || self.is_triple_stacked_piece()
+            || self.is_body_triple_stacked_piece()
     }
 
     fn hazard_count(&self) -> u8 {
@@ -263,6 +293,12 @@ impl<T: CellNum> Cell<T> {
 
     pub fn set_double_stacked(&mut self, sid: SnakeId, next_pos: CellIndex<T>) {
         self.flags = (self.flags & !KIND_MASK) | DOUBLE_STACKED_PIECE;
+        self.id = sid;
+        self.idx = next_pos;
+    }
+
+    pub fn set_body_triple_stacked(&mut self, sid: SnakeId, next_pos: CellIndex<T>) {
+        self.flags = (self.flags & !KIND_MASK) | BODY_TRIPLE_STACKED_PIECE;
         self.id = sid;
         self.idx = next_pos;
     }

@@ -348,6 +348,138 @@ mod test {
     }
 
     #[test]
+    fn test_triple_stacked_eats_food() {
+        // Regression test for the engine-verifier "Bug A" finding (2026-05-01):
+        // a length-3 fully-stacked snake that eats food on its first move
+        // should end up at length 4 with three body segments stacked at the
+        // original position. The fix introduces the `BODY_TRIPLE_STACKED`
+        // cell kind for the post-eat shape; see `DESIGN_stacked_food_fix.md`.
+        let game_fixture = include_str!("../../../fixtures/triple_stacked_with_food_ahead.json");
+        let g: Result<DEGame, _> = serde_json::from_slice(game_fixture.as_bytes());
+        let g = g.expect("the json literal is valid");
+        let snake_id_mapping = build_snake_id_map(&g);
+        let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
+
+        let instruments = Instruments;
+        let res = compact
+            .simulate_with_moves(&instruments, vec![(SnakeId(0), [Move::Right].as_slice())])
+            .collect_vec();
+        let after = res[0].1;
+
+        // Body should be: head at (9,2), then three stacked tail segments at (8,2)
+        let body = after.get_snake_body_vec(&SnakeId(0));
+        let head_at_9_2 = CellIndex::<u8>::new(Position { x: 9, y: 2 }, 11);
+        let tail_at_8_2 = CellIndex::<u8>::new(Position { x: 8, y: 2 }, 11);
+        assert_eq!(
+            body,
+            vec![head_at_9_2, tail_at_8_2, tail_at_8_2, tail_at_8_2],
+            "expected length-4 body with triple-stacked tail at (8,2)"
+        );
+        assert_eq!(after.get_length(&SnakeId(0)), 4);
+        assert_eq!(after.get_health(&SnakeId(0)), 100);
+    }
+
+    #[test]
+    fn test_body_triple_stacked_round_trips() {
+        // The post-eat shape `[head, x, x, x]` (where the tail is three
+        // segments stacked at a single non-head cell) is a legitimate
+        // mid-game body. Convert it through `convert_from_game` and back
+        // via `get_snake_body_vec`; the body must round-trip exactly.
+        let game_fixture = include_str!("../../../fixtures/post_eat_body_triple_stacked.json");
+        let g: DEGame = serde_json::from_slice(game_fixture.as_bytes())
+            .expect("the json literal is valid");
+        let snake_id_mapping = build_snake_id_map(&g);
+        let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
+
+        let body = compact.get_snake_body_vec(&SnakeId(0));
+        let head = CellIndex::<u8>::new(Position { x: 9, y: 2 }, 11);
+        let tail = CellIndex::<u8>::new(Position { x: 8, y: 2 }, 11);
+        assert_eq!(
+            body,
+            vec![head, tail, tail, tail],
+            "post-eat body must round-trip through the compact representation"
+        );
+        assert_eq!(compact.get_length(&SnakeId(0)), 4);
+    }
+
+    #[test]
+    fn test_body_triple_stacked_shrinks_on_next_move() {
+        // After the post-eat shape, advance one more step (no food). The
+        // BODY_TRIPLE_STACKED tail cell must demote to DOUBLE_STACKED,
+        // length stays 4, and the body shape becomes `[new_head, old_head, x, x]`.
+        let game_fixture = include_str!("../../../fixtures/post_eat_body_triple_stacked.json");
+        let g: DEGame = serde_json::from_slice(game_fixture.as_bytes())
+            .expect("the json literal is valid");
+        let snake_id_mapping = build_snake_id_map(&g);
+        let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
+
+        let instruments = Instruments;
+        let res = compact
+            .simulate_with_moves(&instruments, vec![(SnakeId(0), [Move::Up].as_slice())])
+            .collect_vec();
+        let after = res[0].1;
+
+        let body = after.get_snake_body_vec(&SnakeId(0));
+        let new_head = CellIndex::<u8>::new(Position { x: 9, y: 3 }, 11);
+        let old_head = CellIndex::<u8>::new(Position { x: 9, y: 2 }, 11);
+        let stack = CellIndex::<u8>::new(Position { x: 8, y: 2 }, 11);
+        assert_eq!(
+            body,
+            vec![new_head, old_head, stack, stack],
+            "next move after eat-while-stacked must shrink the triple-stack to a double-stack"
+        );
+        assert_eq!(after.get_length(&SnakeId(0)), 4);
+    }
+
+    #[test]
+    fn test_snake_collision_ordering() {
+        // Regression test for engine-verifier "Bug B" (2026-05-01).
+        //
+        // Setup (turn 5):
+        //   snake-0 body=[(3,6),(3,7),(4,7)], move=Right -> new_head=(4,6)
+        //   snake-1 body=[(4,6),(5,6),(6,6)], move=Right -> new_head=(5,6)
+        //
+        // Expected per Battlesnake spec (all moves resolve simultaneously):
+        //   snake-0 dies: new_head (4,6) collides with snake-1's post-move
+        //                 body which still occupies (4,6) as a body segment.
+        //   snake-1 dies: self-collision -- new_head (5,6) is its own neck.
+        //
+        // Previous Rust behavior incorrectly produced snake-0 ALIVE because
+        // snake-1's `Dead` move-result triggered `kill_and_remove` inside the
+        // first move-processing loop, wiping snake-1's body before snake-0's
+        // collision check could see it.
+        let game_fixture = include_str!("../../../fixtures/snake_collision_ordering.json");
+        let g: Result<DEGame, _> = serde_json::from_slice(game_fixture.as_bytes());
+        let g = g.expect("the json literal is valid");
+        let snake_id_mapping = build_snake_id_map(&g);
+        let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
+
+        let instruments = Instruments;
+        let res = compact
+            .simulate_with_moves(
+                &instruments,
+                vec![
+                    (SnakeId(0), [Move::Right].as_slice()),
+                    (SnakeId(1), [Move::Right].as_slice()),
+                ],
+            )
+            .collect_vec();
+        assert_eq!(res.len(), 1, "exactly one move combination");
+        let after = res[0].1;
+
+        assert_eq!(
+            after.get_health(&SnakeId(0)),
+            0,
+            "snake-0 must die from collision with snake-1's body at (4,6)"
+        );
+        assert_eq!(
+            after.get_health(&SnakeId(1)),
+            0,
+            "snake-1 must die from self-collision into its neck at (5,6)"
+        );
+    }
+
+    #[test]
     fn test_tail_collision() {
         let game_fixture = include_str!("../../../fixtures/start_of_game.json");
         let g: Result<DEGame, _> = serde_json::from_slice(game_fixture.as_bytes());
