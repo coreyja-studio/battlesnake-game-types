@@ -348,21 +348,12 @@ mod test {
     }
 
     #[test]
-    #[ignore = "fails: representation lacks a non-head triple-stacked body kind; see eval.rs FIXME and engine-verifier FAILURES_ANALYSIS.md"]
     fn test_triple_stacked_eats_food() {
         // Regression test for the engine-verifier "Bug A" finding (2026-05-01):
-        // a length-3 fully-stacked snake that eats food on its first move ends
-        // up at length 3 instead of 4 because the eval loop demotes the
-        // triple-stacked cell to double-stacked even though the tail has grown
-        // into the same cell. The Go reference engine correctly produces length
-        // 4 with three body segments still stacked at the original position.
-        //
-        // Currently `#[ignore]`d because a correct fix requires extending the
-        // compact representation: there is no cell kind for "non-head triple-
-        // stacked body with a chain pointer", and `convert_from_game` already
-        // rejects the same body shape (`bad body stack`). A naive
-        // set_cell_triple_stacked on the old-head cell breaks
-        // `assert_consistency` (triple-stacked has no `get_next_index`).
+        // a length-3 fully-stacked snake that eats food on its first move
+        // should end up at length 4 with three body segments stacked at the
+        // original position. The fix introduces the `BODY_TRIPLE_STACKED`
+        // cell kind for the post-eat shape; see `DESIGN_stacked_food_fix.md`.
         let game_fixture = include_str!("../../../fixtures/triple_stacked_with_food_ahead.json");
         let g: Result<DEGame, _> = serde_json::from_slice(game_fixture.as_bytes());
         let g = g.expect("the json literal is valid");
@@ -386,6 +377,58 @@ mod test {
         );
         assert_eq!(after.get_length(&SnakeId(0)), 4);
         assert_eq!(after.get_health(&SnakeId(0)), 100);
+    }
+
+    #[test]
+    fn test_body_triple_stacked_round_trips() {
+        // The post-eat shape `[head, x, x, x]` (where the tail is three
+        // segments stacked at a single non-head cell) is a legitimate
+        // mid-game body. Convert it through `convert_from_game` and back
+        // via `get_snake_body_vec`; the body must round-trip exactly.
+        let game_fixture = include_str!("../../../fixtures/post_eat_body_triple_stacked.json");
+        let g: DEGame = serde_json::from_slice(game_fixture.as_bytes())
+            .expect("the json literal is valid");
+        let snake_id_mapping = build_snake_id_map(&g);
+        let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
+
+        let body = compact.get_snake_body_vec(&SnakeId(0));
+        let head = CellIndex::<u8>::new(Position { x: 9, y: 2 }, 11);
+        let tail = CellIndex::<u8>::new(Position { x: 8, y: 2 }, 11);
+        assert_eq!(
+            body,
+            vec![head, tail, tail, tail],
+            "post-eat body must round-trip through the compact representation"
+        );
+        assert_eq!(compact.get_length(&SnakeId(0)), 4);
+    }
+
+    #[test]
+    fn test_body_triple_stacked_shrinks_on_next_move() {
+        // After the post-eat shape, advance one more step (no food). The
+        // BODY_TRIPLE_STACKED tail cell must demote to DOUBLE_STACKED,
+        // length stays 4, and the body shape becomes `[new_head, old_head, x, x]`.
+        let game_fixture = include_str!("../../../fixtures/post_eat_body_triple_stacked.json");
+        let g: DEGame = serde_json::from_slice(game_fixture.as_bytes())
+            .expect("the json literal is valid");
+        let snake_id_mapping = build_snake_id_map(&g);
+        let compact: CellBoard4Snakes11x11 = g.as_cell_board(&snake_id_mapping).unwrap();
+
+        let instruments = Instruments;
+        let res = compact
+            .simulate_with_moves(&instruments, vec![(SnakeId(0), [Move::Up].as_slice())])
+            .collect_vec();
+        let after = res[0].1;
+
+        let body = after.get_snake_body_vec(&SnakeId(0));
+        let new_head = CellIndex::<u8>::new(Position { x: 9, y: 3 }, 11);
+        let old_head = CellIndex::<u8>::new(Position { x: 9, y: 2 }, 11);
+        let stack = CellIndex::<u8>::new(Position { x: 8, y: 2 }, 11);
+        assert_eq!(
+            body,
+            vec![new_head, old_head, stack, stack],
+            "next move after eat-while-stacked must shrink the triple-stack to a double-stack"
+        );
+        assert_eq!(after.get_length(&SnakeId(0)), 4);
     }
 
     #[test]

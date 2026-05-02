@@ -258,12 +258,11 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
             return Err("too many snakes".into());
         }
 
-        for snake in &game.board.snakes {
-            let counts = &snake.body.iter().counts();
-            if counts.values().any(|v| *v == TRIPLE_STACK) && counts.len() != 1 {
-                return Err(format!("snake {} has a bad body stack (3 segs on same square and more than one unique position)", snake.id).into());
-            }
-        }
+        // Note: a snake with a triple-stacked body and more than one unique
+        // position is the legitimate post-eat shape of a fully-stacked snake
+        // — the head moves to a new cell while three segments remain on the
+        // old cell. That shape is now encoded with the
+        // `BODY_TRIPLE_STACKED_PIECE` kind. See `DESIGN_stacked_food_fix.md`.
         let width = game.board.width as u8;
         let height = game.board.height as u8;
 
@@ -296,7 +295,18 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
                     heads[snake_id.0 as usize] = head_idx;
                 }
                 cells[cell_idx.0.as_usize()] = if *count == TRIPLE_STACK {
-                    Cell::make_triple_stacked_piece(snake_id)
+                    if *pos == snake.head {
+                        // Start-of-game self-stacked head (head, neck, and tail
+                        // all on the same cell). The legacy
+                        // `TRIPLE_STACKED_PIECE` kind is implicitly the head.
+                        Cell::make_triple_stacked_piece(snake_id)
+                    } else {
+                        // Mid-game three-stack body cell created when a fully
+                        // self-stacked snake eats a food. The cell carries a
+                        // chain pointer to the new head cell (`next_index`,
+                        // maintained by this loop).
+                        Cell::make_body_triple_stacked_piece(snake_id, next_index)
+                    }
                 } else if *pos == snake.head {
                     // head can never be doubled, so let's assert it here, the cost of
                     // one comparison is worth the saftey imo
@@ -393,6 +403,19 @@ impl<T: CN, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize>
     ) {
         let mut old_cell = self.get_cell(cell_index);
         old_cell.set_double_stacked(sid, next_id);
+        self.cells[cell_index.0.as_usize()] = old_cell;
+    }
+
+    /// Set the given index as a body cell holding three stacked segments.
+    /// The cell carries a chain pointer (`next_id`) toward the head.
+    pub fn set_cell_body_triple_stacked(
+        &mut self,
+        cell_index: CellIndex<T>,
+        sid: SnakeId,
+        next_id: CellIndex<T>,
+    ) {
+        let mut old_cell = self.get_cell(cell_index);
+        old_cell.set_body_triple_stacked(sid, next_id);
         self.cells[cell_index.0.as_usize()] = old_cell;
     }
 

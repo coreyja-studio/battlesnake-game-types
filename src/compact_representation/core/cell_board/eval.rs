@@ -205,6 +205,10 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
                     let old_tail_cell = new.get_cell(old_tail);
                     if old_tail_cell.is_double_stacked_piece() {
                         new.set_cell_body_piece(old_tail, id, old_tail_cell.get_idx());
+                    } else if old_tail_cell.is_body_triple_stacked_piece() {
+                        // Mid-game three-stack body cell shrinks one level,
+                        // keeping its existing chain pointer toward the head.
+                        new.set_cell_double_stacked(old_tail, id, old_tail_cell.get_idx());
                     } else {
                         new.cell_remove(old_tail);
                         new.set_cell_head(old_head, id, new_tail)
@@ -349,6 +353,7 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
                 old_head,
                 new_head,
                 new_tail,
+                ate_food,
                 ..
             }) = result
             {
@@ -362,18 +367,26 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
 
                     let old_head_cell = self.get_cell(old_head);
                     if old_head_cell.is_triple_stacked_piece() {
-                        // FIXME(2026-05-01): when ate_food is also true here,
-                        // the snake body should be `[new_head, old_head x3]`
-                        // (length 4) but we demote the cell to double-stacked
-                        // and produce length 3 — see test
-                        // `test_triple_stacked_eats_food` (currently
-                        // `#[ignore]`d). The compact representation has no kind
-                        // for "non-head triple-stacked body with chain
-                        // pointer", and `convert_from_game` rejects the same
-                        // body shape outright (`bad body stack`). Fixing this
-                        // requires a new cell kind; documented in
-                        // `byte-scratch:engine-verifier/FAILURES_ANALYSIS.md`.
-                        new.set_cell_double_stacked(old_head, id, new_head);
+                        if ate_food {
+                            // The snake was fully self-stacked and just ate.
+                            // Body becomes `[new_head, old_head x3]`: three
+                            // segments stay on the old cell with a chain
+                            // pointer back to `new_head`. This requires the
+                            // dedicated `BODY_TRIPLE_STACKED` kind because
+                            // the existing `TRIPLE_STACKED_PIECE` is implicitly
+                            // the head and has no chain pointer. See
+                            // `DESIGN_stacked_food_fix.md`.
+                            //
+                            // Note: a snake cannot become quad-stacked at the
+                            // same cell — eating moves the head off the stack,
+                            // so two consecutive food-eats on the same square
+                            // are impossible.
+                            new.set_cell_body_triple_stacked(old_head, id, new_head);
+                        } else {
+                            // No food: body becomes `[new_head, old_head x2]`.
+                            // The old head cell demotes by one stack level.
+                            new.set_cell_double_stacked(old_head, id, new_head);
+                        }
                     } else {
                         new.set_cell_body_piece(old_head, id, new_head);
                     }

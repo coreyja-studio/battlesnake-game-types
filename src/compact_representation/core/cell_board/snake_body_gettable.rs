@@ -20,7 +20,9 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
             if self.get_cell(c).is_double_stacked_piece() {
                 body.push(c);
             }
-            if self.get_cell(c).is_triple_stacked_piece() {
+            if self.get_cell(c).is_triple_stacked_piece()
+                || self.get_cell(c).is_body_triple_stacked_piece()
+            {
                 body.push(c);
                 body.push(c);
             }
