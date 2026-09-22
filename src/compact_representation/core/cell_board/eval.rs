@@ -1,10 +1,11 @@
 use std::borrow::Borrow;
 
 use itertools::Itertools;
+use tracing::instrument;
 
 use crate::{
     compact_representation::{core::dimensions::Dimensions, CellNum},
-    types::{self, HeadGettableGame, Move, SnakeId, N_MOVES},
+    types::{self, HazardQueryableGame, HeadGettableGame, Move, SnakeId, N_MOVES},
 };
 
 use super::{CellBoard, CellIndex};
@@ -116,7 +117,7 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
                     while curr != old_head {
                         prev = curr;
                         curr = self.get_cell(curr).get_next_index().unwrap_or_else(|| {
-                            eprintln!("{}", self);
+                            eprintln!("{self}");
                             panic!("snake is inconsistent")
                         });
                     }
@@ -138,9 +139,8 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
 
                 let mut new_health = self.healths[id.as_usize()];
                 new_health = new_health.saturating_sub(1);
-                if self.get_cell(new_head).is_hazard() {
-                    new_health = new_health.saturating_sub(self.hazard_damage);
-                }
+                let hazard_damange = self.get_hazard_damage_at(&new_head);
+                new_health = new_health.saturating_sub(hazard_damange);
 
                 let ate_food = self.get_cell(new_head).is_food();
                 let mut new_length = self.lengths[id.as_usize()];
@@ -171,6 +171,7 @@ impl<T: CellNum, D: Dimensions, const BOARD_SIZE: usize, const MAX_SNAKES: usize
         new_heads
     }
 
+    #[instrument(level = "trace", skip_all)]
     pub fn evaluate_moves_with_state<'a>(
         &self,
         moves: impl Iterator<Item = &'a (SnakeId, crate::types::Move)>,

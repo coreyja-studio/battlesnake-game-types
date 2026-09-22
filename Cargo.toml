@@ -1,8 +1,8 @@
 [package]
 name = "battlesnake-game-types"
-version = "0.16.0"
+version = "0.17.0"
 authors = ["Penelope Phippen <penelope@hey.com>", "Corey Alexander <coreyja@gmail.com>"]
-edition = "2018"
+edition = "2021"
 description = "game types for play.battlesnake.com"
 license = "Apache-2.0"
 repository = "https://github.com/penelopezone/battlesnake-game-types"
@@ -12,14 +12,22 @@ documentation = "https://docs.rs/battlesnake-game-types"
 
 [dependencies]
 serde = {version = "1.0", features = ["derive"] }
-rand =  {version = "0.8.4", features = ["small_rng"] }
-itertools = "0.10.1"
+rand =  {version = "0.8.5", features = ["small_rng"] }
+itertools = "0.10.3"
 fxhash = "0.2.1"
 serde_json = "1.0"
+tracing = { version = "0.1.37" }
 
 [dev-dependencies]
-criterion = "0.3"
+criterion = "0.4"
+pprof = { version = "0.11", default-features=false, features = ["flamegraph", "frame-pointer"] }
+tracing-subscriber = "0.3.16"
+tracing-flame = "0.2.0"
 
 [[bench]]
 name = "start_of_game_compact"
+harness = false
+
+[[bench]]
+name = "pea_eater"
 harness = false
