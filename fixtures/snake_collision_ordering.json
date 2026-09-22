@@ -1,0 +1,61 @@
+{
+  "game": {
+    "id": "snake-collision-ordering-bug",
+    "ruleset": {
+      "name": "standard",
+      "version": "v1.0.20"
+    },
+    "timeout": 600
+  },
+  "turn": 5,
+  "board": {
+    "height": 11,
+    "width": 11,
+    "snakes": [
+      {
+        "id": "snake-0",
+        "name": "victim",
+        "latency": "0",
+        "health": 96,
+        "body": [
+          { "x": 3, "y": 6 },
+          { "x": 3, "y": 7 },
+          { "x": 4, "y": 7 }
+        ],
+        "head": { "x": 3, "y": 6 },
+        "length": 3,
+        "shout": ""
+      },
+      {
+        "id": "snake-1",
+        "name": "self-collider",
+        "latency": "0",
+        "health": 96,
+        "body": [
+          { "x": 4, "y": 6 },
+          { "x": 5, "y": 6 },
+          { "x": 6, "y": 6 }
+        ],
+        "head": { "x": 4, "y": 6 },
+        "length": 3,
+        "shout": ""
+      }
+    ],
+    "food": [],
+    "hazards": []
+  },
+  "you": {
+    "id": "snake-0",
+    "name": "victim",
+    "latency": "0",
+    "health": 96,
+    "body": [
+      { "x": 3, "y": 6 },
+      { "x": 3, "y": 7 },
+      { "x": 4, "y": 7 }
+    ],
+    "head": { "x": 3, "y": 6 },
+    "length": 3,
+    "shout": ""
+  }
+}
